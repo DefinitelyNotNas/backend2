@@ -10,16 +10,7 @@ const client = require("./server/db");
 const app = express();
 
 // --- CORS Middleware ---
-app.use(
-	cors({
-		origin: [
-			"http://localhost:5173",
-			"https://rcitysermonupload.netlify.app",
-		],
-        methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-		allowedHeaders: ["Content-Type", "Authorization"],
-	})
-);
+app.use(cors());
 
 // --- JSON Parsing & Logging ---
 app.use(express.json());
@@ -35,23 +26,21 @@ app.use("/api", require("./server/routes"));
 const PORT = process.env.PORT || 3000;
 
 const init = async () => {
-    try {
-        // Validate DB connectivity
-        await client.query("SELECT 1");
-        console.log("Connected to PostgreSQL");
+	try {
+		// Validate DB connectivity
+		await client.query("SELECT 1");
+		console.log("Connected to PostgreSQL");
 
-        app.listen(PORT, () => {
-            console.log(`Server running on port ${PORT}`);
-        });
-    } catch (error) {
-        console.error("DB connection error:", error);
-        process.exit(1);
-    }
+		app.listen(PORT, () => {
+			console.log(`Server running on port ${PORT}`);
+		});
+	} catch (error) {
+		console.error("DB connection error:", error);
+		process.exit(1);
+	}
 };
 
 // Only start the server when run directly
-if (require.main === module) {
-    init();
-}
+init();
 
 module.exports = app;
