@@ -104,4 +104,63 @@ r.patch("/:id", async (req, res) => {
 	}
 });
 
+r.post("/api/users/login", async (req, res) => {
+	try {
+		const { email, password } = req.body;
+
+		if (!email || !password) {
+			return res
+				.status(400)
+				.json({ message: "Email and password are required" });
+		}
+
+		// Find user by email
+		const user = await db.query(
+			"SELECT * FROM users WHERE email = $1",
+			[email]
+		);
+
+		if (user.rows.length === 0) {
+			return res
+				.status(401)
+				.json({ message: "Invalid email or password" });
+		}
+
+		// Compare password with hashed password
+		const isValidPassword = await bcrypt.compare(
+			password,
+			user.rows[0].password_hash
+		);
+
+		if (!isValidPassword) {
+			return res
+				.status(401)
+				.json({ message: "Invalid email or password" });
+		}
+
+		// Generate JWT token
+		const token = jwt.sign(
+			{ userId: user.rows[0].id, email: user.rows[0].email },
+			process.env.JWT_SECRET,
+			{ expiresIn: "7d" }
+		);
+
+		// Return token and user data
+		res.status(200).json({
+			token,
+			user: {
+				id: user.rows[0].id,
+				email: user.rows[0].email,
+				first_name: user.rows[0].first_name,
+				last_name: user.rows[0].last_name,
+				phone: user.rows[0].phone,
+				pco_person_id: user.rows[0].pco_person_id,
+			},
+		});
+	} catch (error) {
+		console.error("Login error:", error);
+		res.status(500).json({ message: "Internal server error" });
+	}
+});
+
 module.exports = r;
