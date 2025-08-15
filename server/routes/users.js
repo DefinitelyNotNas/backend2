@@ -9,45 +9,97 @@ const r = Router();
  * body: { email, passwordHash, firstName, lastName, phone?, pcoPersonId }
  */
 r.post("/", async (req, res) => {
-	const {
-		email,
-		passwordHash,
-		firstName,
-		lastName,
-		phone,
-		pcoPersonId,
-	} = req.body || {};
-	if (
-		!email ||
-		!passwordHash ||
-		!firstName ||
-		!lastName ||
-		!pcoPersonId
-	) {
-		return res.status(400).json({ error: "Missing required fields" });
-	}
 	try {
-		const { rows } = await q(
-			`INSERT INTO users (email, password_hash, first_name, last_name, phone, pco_person_id)
-             VALUES ($1,$2,$3,$4,$5,$6)
-             RETURNING id, email, first_name, last_name, phone, pco_person_id, created_at`,
-			[
-				email,
-				passwordHash,
-				firstName,
-				lastName,
-				phone ?? null,
-				pcoPersonId,
-			]
-		);
-		res.status(201).json(rows[0]);
-	} catch (e) {
-		if (e && e.code === "23505") {
+		const { email, password, firstName, lastName, phone } = req.body;
+		if (!email || !password || !firstName || !lastName) {
 			return res
-				.status(409)
-				.json({ error: "Email or PCO person already exists" });
+				.status(400)
+				.json({ error: "Missing required fields" });
 		}
-		res.status(500).json({ error: "Failed to create user" });
+
+		// Check for existing user in DB (handle duplicates)
+		const existingUser = await pool.query(
+			"SELECT * FROM users WHERE email = $1",
+			[email]
+		);
+		if (existingUser.rows.length > 0) {
+			return res.status(409).json({ error: "Email already exists" });
+		}
+
+		// Hash password
+		const passwordHash = await bcrypt.hash(password, 10);
+
+		// Check PCO for existing person
+		let pcoId = null;
+		try {
+			const checkResponse = await axios.get(
+				`https://api.planningcenteronline.com/people/v2/people?where[email_address]=${encodeURIComponent(
+					email
+				)}`,
+				{
+					headers: { Authorization: `Bearer ${process.env.PCO_PAT}` },
+				}
+			);
+			if (checkResponse.data.data.length > 0) {
+				pcoId = checkResponse.data.data[0].id;
+			} else {
+				// Step 4: Create New PCO Person If Needed
+				// Build payload
+				const payload = {
+					data: {
+						type: "Person",
+						attributes: {
+							first_name: firstName,
+							last_name: lastName,
+							primary_email_address: email,
+							primary_phone_number: phone || null,
+						},
+					},
+				};
+				// Send POST request
+				const createResponse = await axios.post(
+					"https://api.planningcenteronline.com/people/v2/people",
+					payload,
+					{
+						headers: {
+							Authorization: `Bearer ${process.env.PCO_PAT}`,
+						},
+					}
+				);
+				// Get new ID
+				pcoId = createResponse.data.data.id;
+			}
+		} catch (pcoError) {
+			console.error("PCO API error:", pcoError.response?.data);
+			if (pcoError.response?.status === 409) {
+				return res.status(409).json({
+					error: "PCO person already exists with this email",
+				});
+			}
+			return res
+				.status(500)
+				.json({ error: "Failed to interact with PCO API" });
+		}
+
+		// Step 5: Save User to Database
+		// Insert record with final PCO ID
+		const insertResult = await pool.query(
+			"INSERT INTO users (email, password_hash, first_name, last_name, phone, pco_person_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id, email, first_name, last_name, phone, pco_person_id",
+			[email, passwordHash, firstName, lastName, phone || null, pcoId]
+		);
+		const newUser = insertResult.rows[0];
+
+		// Generate JWT token
+		const token = jwt.sign(
+			{ id: newUser.id, email: newUser.email },
+			process.env.JWT_SECRET,
+			{ expiresIn: "7d" }
+		);
+
+		res.status(201).json({ token, user: newUser });
+	} catch (error) {
+		console.error("Create user error:", error);
+		res.status(500).json({ error: "Server error" });
 	}
 });
 
@@ -120,7 +172,7 @@ r.post("/api/users/login", async (req, res) => {
 			[email]
 		);
 
-		if (user.rows.length === 0) {
+		if (!user.rows.length) {
 			return res
 				.status(401)
 				.json({ message: "Invalid email or password" });
